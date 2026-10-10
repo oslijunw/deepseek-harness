@@ -74,7 +74,7 @@ function classifyPiAiError(message: string): string {
  * @returns the mapped harness reason. Recognized error text, `stop` usage above
  *   `contextWindow`, and zero-output `length` usage that fills the window map
  *   to `CONTEXT_WINDOW_EXCEEDED`; a `stop` with no content blocks maps to an
- *   `EMPTY_RESPONSE` error, while terminal `pending` and `deferred` states map
+ *   `EMPTY_RESPONSE` error (empty text blocks do not count), while terminal `pending` and `deferred` states map
  *   to non-retryable `PI_AI_ERROR` failures.
  */
 export function mapStopReason(message: AssistantMessage, contextWindow?: number): FinishReason {
@@ -94,9 +94,9 @@ export function mapStopReason(message: AssistantMessage, contextWindow?: number)
 
   switch (message.stopReason) {
     case 'stop':
-      // A terminal stop that produced no content blocks is a degenerate
+      // A terminal stop that produced no content beyond empty text is a degenerate
       // provider completion, not a successful (empty) assistant message.
-      if (message.content.length === 0) {
+      if (!message.content.some(block => block.type !== 'text' || block.text.length > 0)) {
         return {
           kind: 'error',
           failure: {

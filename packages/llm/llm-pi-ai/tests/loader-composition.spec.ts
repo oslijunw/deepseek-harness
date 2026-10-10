@@ -1,6 +1,6 @@
 /** Profile patch edits and credential updates reach the next real adapter request. */
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -11,6 +11,8 @@ import Include from '@deepseek-ai/cordis-plugin-include'
 import LlmRuntime, { createMessage, createUserMessage, userAgent } from '@deepseek-ai/dsh-llm'
 import AuthorizationService from '@deepseek-ai/dsh-authorization'
 import LocalCredentialProvider from '@deepseek-ai/dsh-credentials-local'
+import LocalAttachmentStore from '@deepseek-ai/dsh-attachment-local'
+import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import { profileComposition } from '../../../settings/settings/tests/profile-composition.ts'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import { assemble } from './assemble.ts'
@@ -38,7 +40,7 @@ afterEach(async () => {
 })
 
 /** Boot the dormant composition: a bare `llm-pi-ai` row with no config at all. */
-async function loadComposition(): Promise<{ ctx: Context; settingsPath: string }> {
+async function loadComposition(withImages = false): Promise<{ ctx: Context; settingsPath: string }> {
   root = await mkdtemp(join(tmpdir(), 'dsh-pi-composition-'))
   await writeFile(join(root, '.credentials.yaml'), 'version: 1\nrefs:\n  PI_COMPOSITION_KEY: key-from-store\n', { mode: 0o600 })
 
@@ -55,6 +57,14 @@ async function loadComposition(): Promise<{ ctx: Context; settingsPath: string }
     "  name: '@deepseek-ai/dsh-authorization'",
     '- id: llm-pi-ai',
     "  name: '@deepseek-ai/dsh-llm-pi-ai'",
+    ...withImages ? [
+      '- id: attachment-local',
+      "  name: '@deepseek-ai/dsh-attachment-local'",
+      '  config:',
+      `    dshHome: ${JSON.stringify(root)}`,
+      '- id: fs-local',
+      "  name: '@deepseek-ai/dsh-fs-local'",
+    ] : [],
     '',
   ].join('\n'))
 
@@ -68,6 +78,8 @@ async function loadComposition(): Promise<{ ctx: Context; settingsPath: string }
     ['@deepseek-ai/dsh-credentials-local', LocalCredentialProvider],
     ['@deepseek-ai/dsh-authorization', AuthorizationService],
     ['@deepseek-ai/dsh-llm-pi-ai', LlmPiAi],
+    ['@deepseek-ai/dsh-attachment-local', LocalAttachmentStore],
+    ['@deepseek-ai/dsh-fs-local', LocalFileSystem],
   ])
   const internal: ModuleLoaderV2 = {
     version: 'v2',
@@ -87,6 +99,41 @@ async function loadComposition(): Promise<{ ctx: Context; settingsPath: string }
 }
 
 describe('llm-pi-ai real dormant composition', () => {
+  it('stores hosted Responses images through the real Loader composition and replays their links', async () => {
+    const image = await readFile(new URL('./fixtures/qr-code.png', import.meta.url))
+    const item = { type: 'image_generation_call', id: 'ig_1', status: 'completed', output_format: 'png', result: image.toString('base64') }
+    const empty = { type: 'message', id: 'msg_1', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: '', annotations: [] }] }
+    const frame = (data: Record<string, unknown>): { event: string; data: string } => ({ event: String(data['type']), data: JSON.stringify(data) })
+    const server = await mockServer([
+      { events: [
+        frame({ type: 'response.output_item.done', output_index: 0, item }),
+        frame({ type: 'response.output_item.done', output_index: 1, item: empty }),
+        frame({ type: 'response.completed', response: { id: 'resp_1', status: 'completed', output: [item, empty], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }),
+      ] },
+      { events: [frame({ type: 'response.output_item.done', output_index: 0, item: { ...empty, id: 'msg_2', content: [{ type: 'output_text', text: 'done', annotations: [] }] } }), frame({ type: 'response.completed', response: { id: 'resp_2', status: 'completed', output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } })] },
+    ])
+    const { ctx, settingsPath } = await loadComposition(true)
+    await writeFile(settingsPath, [
+      '- id: llm-pi-ai', '  config:', '    providers:', '      image-gateway:',
+      '        apiKeyEnv: PI_COMPOSITION_KEY', '        api: openai-responses',
+      `        baseURL: ${server.url}/v1`, '        models:', '          - id: image-model', '',
+    ].join('\n'))
+    await vi.waitFor(() => { expect(ctx.llm.listProviders().some(provider => provider.id === 'image-gateway')).toBe(true) }, { timeout: 5000 })
+    const result = await assemble(ctx, { provider: 'image-gateway', model: 'image-model', messages: [] })
+    const links = result.message.content.filter(block => block.type === 'text' && block.text.length > 0)
+    expect(links).toHaveLength(1)
+    const link = links[0]
+    if (link?.type !== 'text') throw new Error('missing image link')
+    const path = /^!\[Generated image\]\(<(.+)>\)$/.exec(link.text)?.[1]
+    if (path === undefined) throw new Error('missing image path')
+    expect(await readFile(path)).toEqual(image)
+    expect(result.finish).toEqual({ kind: 'stop' })
+    const followup = await assemble(ctx, { provider: 'image-gateway', model: 'image-model', messages: [result.message, createUserMessage({ content: [{ type: 'text', text: 'describe the result' }], source: { kind: 'user' } })] })
+    expect(followup.message.content).toEqual([{ type: 'text', text: 'done' }])
+    expect(JSON.stringify(server.requests[1])).toContain('Generated image')
+    expect(JSON.stringify(server.requests[1])).not.toContain(image.toString('base64'))
+  })
+
   it('boots with zero routes and registers one the moment settings supply a profile', async () => {
     vi.stubEnv('PI_COMPOSITION_KEY', '')
     const server = await mockServer([{ events: textEvents }])
