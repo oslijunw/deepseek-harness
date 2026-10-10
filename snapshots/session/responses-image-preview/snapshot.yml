@@ -1,0 +1,7 @@
+version: 1
+scenario: responses-image-preview
+profile: headless
+composition: image
+recording: authored
+header:
+  class: image

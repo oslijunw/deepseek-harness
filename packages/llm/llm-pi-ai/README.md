@@ -201,7 +201,7 @@ Conversion preserves logical request order, while image handles and offload plac
 
 #### What the model sees
 
-pi-ai events become harness reasoning, text, tool-call, usage, and finish chunks. The adapter passes parsed tool arguments to the harness as raw JSON strings.
+pi-ai events become harness reasoning, text, tool-call, usage, and finish chunks. The adapter passes parsed tool arguments to the harness as raw JSON strings. Completed Responses `image_generation_call` results are admitted through the durable attachment store and appended as `![Generated image](<path>)` text blocks, where `path` is the read-only attachment path in the current tool filesystem. Attachment count, byte, format, and pixel limits apply. Missing storage, unmapped paths, invalid images, or failed hosted calls fail the request instead of completing with no visible output. Empty text blocks alone also produce `EMPTY_RESPONSE`.
 
 #### Token effect
 
@@ -209,7 +209,7 @@ Generated content affects later inputs only after the loop records it. pi-ai fol
 
 #### KV Cache effect
 
-Recorded response content appends to the next request and does not invalidate its earlier reusable prefix. Unrecorded transport metadata and usage accounting do not affect cache identity.
+Hosted image generation has already run on the provider; it does not create a client function call. A mixed response retains its ordinary function calls, whose results drive the next model request through the normal agent loop. The saved image links enter later history as text; image bytes and provider-native image-call identifiers are not replayed. Recorded response content appends to the next request and does not invalidate its earlier reusable prefix. Unrecorded transport metadata and usage accounting do not affect cache identity.
 
 ## Known Limitations and Deferred Work
 
@@ -232,6 +232,7 @@ These limits define where the adapter stops and future work begins. They are cur
 - **An unauthenticated route depends on its protocol** — a route naming no credential resolves as configured-but-keyless, but pi-ai's OpenAI-compatible implementation still requires an API key or an `Authorization` header, so a keyless local server needs a placeholder credential referenced by `apiKeyEnv` or an `Authorization` entry in `headers`.
 - **`GenerateOptions.stop` is unsupported** — pi-ai's common stream options cannot guarantee stop-sequence behavior across providers.
 - **Conversation update support comes only from the installed pi-ai catalog** — a route receives in-history prompt and tool updates only when its catalog model declares the mid-conversation compat flags, and profiles cannot set them; hand-declared routes and unflagged models receive the concatenated system messages and the complete current tool list at the start of each request.
+- **Hosted image tools are provider-owned** — the adapter handles final `response.completed` image results returned by the gateway; it does not enable hosted tools or expose partial images. Later history contains saved file links rather than native image-call IDs or image bytes.
 - **Images are accepted only in user and tool-result messages** — images in system, developer, or assistant history fail with `UNSUPPORTED_CONTENT` on both conversion paths.
 - **Provider HTTP status is unavailable** — pi-ai error events do not expose a stable HTTP status across providers.
 - **Retry policy is provider-owned, not an SDK retry** — pi-ai SDK retries stay disabled so durable agent steps and `llm/retry` events own every visible attempt, and direct `ctx.llm.stream()` calls remain single-attempt.

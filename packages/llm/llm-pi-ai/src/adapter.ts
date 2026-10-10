@@ -62,6 +62,7 @@ import type { ResolvedPiAiProviderProfile } from './config.ts'
 import { toPiContext } from './context.ts'
 import { conversationUpdates, createModels, getSupportedThinkingLevels } from './models.ts'
 import { toStreamChunks } from './stream.ts'
+import { GeneratedImageOutput } from './generated-images.ts'
 
 /**
  * Initially active declaration added to an Anthropic request whose projected
@@ -399,6 +400,7 @@ export class PiAiAdapter extends LlmAdapter {
             maxBytes: profile.requestImageMaxBytes,
           },
         }, onReplayDegrade)
+      const images = new GeneratedImageOutput(this.config.resolveAttachments, this.config.resolveImageAccess, watchdog.signal)
       const events = snapshot.models.streamSimple(model, context, {
         ...profileOptions(profile, reasoning, apiKey),
         ...options.temperature === undefined ? {} : { temperature: options.temperature },
@@ -408,8 +410,9 @@ export class PiAiAdapter extends LlmAdapter {
         // Profile headers are deployment-owned; attribution names are
         // Harness-owned and therefore win collisions.
         headers: requestHeaders(profile.headers),
+        onProviderStreamEvent: data => images.observe(data),
       })
-      const iterator = toStreamChunks(events, model.contextWindow, options.signal, model.id)[Symbol.asyncIterator]()
+      const iterator = toStreamChunks(images.events(events), model.contextWindow, options.signal, model.id)[Symbol.asyncIterator]()
       let exhausted = false
       try {
         while (true) {

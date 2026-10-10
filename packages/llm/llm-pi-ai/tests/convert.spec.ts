@@ -892,6 +892,22 @@ describe('mapStopReason / mapUsage', () => {
       .toEqual({ kind: 'stop' })
   })
 
+  it('refuses a completed stop containing only empty text blocks', () => {
+    expect(mapStopReason(assistant({ stopReason: 'stop', content: [{ type: 'text', text: '' }, { type: 'text', text: '' }] })))
+      .toMatchObject({ kind: 'error', failure: { code: EMPTY_RESPONSE_CODE } })
+  })
+
+  it('maps a provider error after caller cancellation to an aborted finish', async () => {
+    const abort = new AbortController()
+    abort.abort()
+    const chunks = await collect(toStreamChunks(feed({
+      type: 'error', reason: 'error', error: assistant({ stopReason: 'error', errorMessage: 'fetch failed' }),
+    }), undefined, abort.signal))
+    expect(chunks.at(-1)).toEqual({
+      type: 'finish', reason: { kind: 'aborted', failure: { message: 'fetch failed', code: 'ABORTED' } },
+    })
+  })
+
   it('defaults the error message when pi-ai omits it', () => {
     expect(mapStopReason(assistant({ stopReason: 'error' })))
       .toEqual({ kind: 'error', failure: { message: 'pi-ai stream error', code: 'PI_AI_ERROR' } })
